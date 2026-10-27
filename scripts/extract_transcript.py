@@ -2,7 +2,7 @@
 """extract_transcript.py — 从 Claude Code / Codex 的 transcript jsonl 提取可读对话文本。
 
 用法:
-  python3 extract_transcript.py                  # 自动定位当前会话（mtime 最新）
+  python3 extract_transcript.py                  # 仅凭可核验会话 ID 定位；否则提示显式指定
   python3 extract_transcript.py --path <file>    # 指定 transcript 文件
   python3 extract_transcript.py --tool claude    # 强制按 Claude 解析
   python3 extract_transcript.py --tool codex     # 强制按 Codex 解析
@@ -20,6 +20,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -46,27 +47,11 @@ _CODEX_SYS_PREFIXES = (
 )
 
 
-def find_latest_claude():
-    """~/.claude/projects/**/*.jsonl 中 mtime 最新的"""
-    base = os.path.expanduser("~/.claude/projects")
-    files = glob.glob(os.path.join(base, "*", "*.jsonl"))
-    return max(files, key=os.path.getmtime) if files else None
-
-
-def find_latest_codex():
-    """~/.codex/sessions/**/*.jsonl 中 mtime 最新的"""
-    base = os.path.expanduser("~/.codex/sessions")
-    files = glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True)
-    if not files:
-        files = glob.glob(os.path.expanduser("~/.codex/archived_sessions/*.jsonl"))
-    return max(files, key=os.path.getmtime) if files else None
-
-
 def detect_current_tool():
     """通过环境变量判断当前运行时。
 
     Claude Code 设 CLAUDECODE=1 / CLAUDE_CODE_SESSION_ID；
-    Codex 设 CODEX_* 环境变量。用于精确定位「当前」会话，避免 mtime 误命中另一工具的会话。
+    Codex 设 CODEX_* 环境变量。这里只识别运行时，不表示已定位当前会话。
     """
     if os.environ.get("CLAUDECODE") == "1" or os.environ.get("CLAUDE_CODE_SESSION_ID"):
         return "claude"
@@ -76,26 +61,42 @@ def detect_current_tool():
 
 
 def find_current_session():
-    """优先用环境变量精确定位当前会话，返回 (path, tool) 或 None。
-
-    Claude: 用 CLAUDE_CODE_SESSION_ID 直接定位文件名，无需猜 project 目录转义。
-    Codex:  退回 mtime 最新（Codex 未暴露 session-id 环境变量）。
-    """
+    """只用可核验的会话 ID 精确定位；运行时存在不代表当前会话身份。"""
     tool = detect_current_tool()
     if tool == "claude":
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
         if sid:
-            files = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
-            if files:
+            files = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+            files = [p for p in files if os.path.basename(p).removesuffix(".jsonl") == sid]
+            if len(files) == 1:
                 return files[0], "claude"
-        c = find_latest_claude()
-        if c:
-            return c, "claude"
+            if len(files) > 1:
+                return None
     elif tool == "codex":
-        x = find_latest_codex()
-        if x:
-            return x, "codex"
+        # 只接受环境变量中可与 rollout 文件名精确匹配的 ID。
+        ids = [os.environ.get(k) for k in ("CODEX_SESSION_ID", "CODEX_ROLLOUT_ID")]
+        codex_files = (glob.glob(os.path.expanduser("~/.codex/sessions/**/*.jsonl"), recursive=True)
+                       + glob.glob(os.path.expanduser("~/.codex/archived_sessions/*.jsonl")))
+        for sid in filter(None, ids):
+            matches = [p for p in codex_files if session_id_matches(p, sid)]
+            if len(matches) == 1:
+                return matches[0], "codex"
+            if len(matches) > 1:
+                return None
     return None
+
+
+def session_id_matches(path, session_id):
+    """Match exact basename or a complete dated Codex rollout UUID suffix."""
+    stem = os.path.basename(path).removesuffix(".jsonl")
+    if stem == session_id:
+        return True
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", session_id):
+        return False
+    return re.fullmatch(
+        rf"rollout-\d{{4}}-\d{{2}}-\d{{2}}(?:T\d{{2}}-\d{{2}}-\d{{2}})?-{re.escape(session_id)}",
+        stem,
+    ) is not None
 
 
 def detect_tool(path):
@@ -201,50 +202,35 @@ def main():
     ap = argparse.ArgumentParser(description="提取 Claude/Codex transcript 为可读对话文本")
     ap.add_argument("--path", help="指定 transcript 文件")
     ap.add_argument("--tool", choices=["claude", "codex"], help="强制工具类型")
+    ap.add_argument("--session-id", help="按精确文件名定位会话 ID")
     args = ap.parse_args()
 
     if args.path:
         path = os.path.expanduser(args.path)
         tool = args.tool or detect_tool(path)
+    elif args.session_id:
+        tools = [args.tool] if args.tool else ["claude", "codex"]
+        matches = []
+        for candidate_tool in tools:
+            if candidate_tool == "claude":
+                files = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+                files = [p for p in files if os.path.basename(p).removesuffix(".jsonl") == args.session_id]
+                matches.extend((p, candidate_tool) for p in files)
+            else:
+                files = (glob.glob(os.path.expanduser("~/.codex/sessions/**/*.jsonl"), recursive=True)
+                         + glob.glob(os.path.expanduser("~/.codex/archived_sessions/*.jsonl")))
+                matches.extend((p, candidate_tool) for p in files if session_id_matches(p, args.session_id))
+        if len(matches) != 1:
+            print(f"ERROR: 会话 ID 匹配 {len(matches)} 个文件；请用 --path 指定唯一 transcript", file=sys.stderr)
+            sys.exit(2)
+        path, tool = matches[0]
     else:
-        # 优先用环境变量定位当前会话
         cur = find_current_session()
-        if args.tool == "claude":
-            if cur and cur[1] == "claude":
-                path, tool = cur
-            else:
-                c = find_latest_claude()
-                if not c:
-                    print("ERROR: 找不到 Claude transcript", file=sys.stderr)
-                    sys.exit(1)
-                path, tool = c, "claude"
-        elif args.tool == "codex":
-            if cur and cur[1] == "codex":
-                path, tool = cur
-            else:
-                x = find_latest_codex()
-                if not x:
-                    print("ERROR: 找不到 Codex transcript", file=sys.stderr)
-                    sys.exit(1)
-                path, tool = x, "codex"
-        elif cur:
+        if cur and (not args.tool or cur[1] == args.tool):
             path, tool = cur
         else:
-            # fallback: 无环境变量线索时取两边 mtime 最新
-            c = find_latest_claude()
-            x = find_latest_codex()
-            if c and x:
-                if os.path.getmtime(c) >= os.path.getmtime(x):
-                    path, tool = c, "claude"
-                else:
-                    path, tool = x, "codex"
-            elif c:
-                path, tool = c, "claude"
-            elif x:
-                path, tool = x, "codex"
-            else:
-                print("ERROR: 找不到任何 transcript 文件", file=sys.stderr)
-                sys.exit(1)
+            print("ERROR: 无法核验当前会话身份。请用 --path <transcript> 或 --session-id <id>；mtime 仅作候选，不能代表当前会话。", file=sys.stderr)
+            sys.exit(2)
 
     if not os.path.exists(path):
         print(f"ERROR: 文件不存在: {path}", file=sys.stderr)

@@ -1,6 +1,6 @@
 ---
 name: chat-to-note
-description: 把 Claude Code / Codex 的高质量对话整理成结构化知识笔记。自动定位当前会话的 transcript 文件（抗 compaction，不靠模型回忆），从多轮对话中提炼结论、推理链、决策依据和代码方案，去除寒暄与试错过程，按对话类型（技术决策/知识问答/调试排错/头脑风暴/代码实现）选用匹配结构，输出「整理笔记 + 折叠原文」格式归档到 Obsidian vault。当用户提到「整理这次对话」「把会话存成笔记」「保存这次对话」「整理这次会话」「把对话存到笔记」「沉淀这次对话」时使用。适用于 Claude Code、Codex 的任意高质量会话。
+description: 把 Claude Code / Codex 的高质量对话整理成结构化知识笔记。依据可核验的会话 ID 或指定路径定位 transcript（抗 compaction，不靠模型回忆），从多轮对话中提炼结论、推理链、决策依据和代码方案，去除寒暄与试错过程，按对话类型选用匹配结构，输出「整理笔记 + 折叠原文」。当用户要求整理或保存对话时使用。
 ---
 
 # Chat to Note
@@ -70,6 +70,7 @@ transcript 文件不受 compaction 影响，完整保留所有原始消息。提
 - 代码/方案片段：可直接复用的代码、配置、命令
 - 踩坑洞察：反常识的认知、容易忽略的边界
 - 有力量的原话：对话中精炼的表述
+- 支撑结论的必要证据：若关键数字、测试结果、最终产物或失败原因只出现在工具输出中，按需回取并保留该条证据及来源；其余工具过程仍过滤
 
 **可以改写**：
 - 多轮散落的讨论 -> 合并到同一主题章节
@@ -148,21 +149,21 @@ summary: <一句话核心结论，50 字以内>
 
 ### Step 0：提取对话原文
 
-运行脚本自动定位并解析当前会话 transcript：
+运行脚本按可核验的 ID 定位并解析当前会话 transcript；缺少可靠 ID 时按下方说明指定路径：
 
 ```bash
 python3 scripts/extract_transcript.py
 ```
 
 脚本行为：
-- 自动定位当前会话：优先用环境变量（`CLAUDE_CODE_SESSION_ID` / `CODEX_*`）精确定位当前运行时的会话，避免误命中另一工具；无环境变量时退回 mtime 最新
+- 自动定位当前会话：只接受能精确匹配 transcript 文件名的会话 ID；运行时环境存在或文件 mtime 最新都不能证明它就是当前会话。无法核验时停止并提示用 `--path` 或 `--session-id`，不自动挑选候选
 - 解析 jsonl，过滤 thinking / tool_use / tool_result / reasoning 等过程噪声
 - stdout 输出临时文件路径（内含清洗后的可读对话 Markdown）
 - stderr 输出元信息：`TOOL` / `PATH` / `TURNS` / `PREVIEW`，超 200 轮时附 `TRUNCATE_SUGGESTED`
 
 捕获 stdout 的临时文件路径，用 Read 读取该文件获取可读对话。**不要直接读 jsonl**（1.7MB 会爆 context）。
 
-若用户指定了某次会话，可用 `--path <file>` 或 `--tool claude|codex` 参数。
+若用户指定了某次会话，优先用 `--path <file>`；也可用 `--session-id <id>`，必要时加 `--tool claude|codex` 消除同名歧义。Codex 接受完整文件名，或与 `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl` 等文件唯一匹配的完整 UUID，并检查活跃与归档文件；短 ID、部分 UUID、glob 字符不参与匹配。Claude/Codex ID 若匹配多个文件即停止并要求显式选择。自动提取只在会话 ID 精确匹配唯一文件时继续；否则由用户/调用上下文提供可验证路径，不得把 mtime 最新项或第一句主题静默当作当前会话归档。
 
 ### Step 1：通读，判断对话类型
 

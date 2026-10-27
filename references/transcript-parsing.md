@@ -11,7 +11,7 @@ jsonl 动辄 1.7MB、结构嵌套深，模型直接读会爆 context 且易错�
 ### 位置
 `~/.claude/projects/<工作目录转义>/<session-id>.jsonl`
 
-工作目录转义规则：`/` -> `-`，非 ASCII 字符 -> `-`。因为转义规则复杂，脚本不依赖 cwd 转义，而是用 mtime 最新定位。
+工作目录转义规则：`/` -> `-`，非 ASCII 字符 -> `-`。脚本不根据工作目录猜当前会话；优先使用精确 session ID，否则由用户通过路径显式指定。
 
 ### 消息结构
 每行一个 JSON 对象。相关字段：
@@ -77,16 +77,10 @@ Codex 运行时会往 user role 塞入大量上下文块，**不是用户真实�
 
 ## 自动定位策略
 
-脚本不指定 `--path` 时，优先用环境变量定位当前运行时的会话：
-1. 检测 `CLAUDECODE=1` / `CLAUDE_CODE_SESSION_ID` -> Claude：用 session-id 直接定位 `~/.claude/projects/*/<session-id>.jsonl`（无需猜 project 目录转义）
-2. 检测 `CODEX_*` 环境变量 -> Codex：退回 mtime 最新（Codex 未暴露 session-id 环境变量）
-3. 无环境变量线索 -> fallback：两边 mtime 最新者
-4. `--tool claude|codex` 可强制某端
-
-环境变量定位比 mtime 可靠：避免当前 Claude 会话因 mtime 比 Codex 旧而被误跳过。
+脚本不指定 `--path` 时，只在 session ID 精确匹配唯一 transcript 时自动定位：Claude 使用 `CLAUDE_CODE_SESSION_ID` 精确匹配文件名；Codex 使用 `CODEX_SESSION_ID` / `CODEX_ROLLOUT_ID`，匹配完整文件 basename 或完整 UUID 对应的 `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl` 等文件，并同时检查活跃与 archived transcript。短 ID、部分 UUID 和 glob 元字符不参与匹配；多个文件匹配即视为歧义并停止。`--session-id <id>` 显式按相同规则匹配，`--tool claude|codex` 可限定来源。环境变量只表示运行时线索，不能证明会话身份；mtime 仅是候选排序信息，绝不用于自动选中。
 
 ### 已知边界
-- Codex 未暴露 session-id 环境变量，Codex 侧仍用 mtime 最新 + `PREVIEW` 供确认
+- Claude ID 若匹配多个 project 文件，或 Codex ID 匹配多个活跃/归档文件，必须用 `--path` 显式选定；不能以 `PREVIEW` 代替会话身份核验
 - Codex `developer` role 是系统提示，含大量 plugin 列表等噪声，已过滤
 - Codex user role 里有系统注入块（`<recommended_plugins>` 等），已用前缀白名单过滤，见上方「系统注入过滤」
 

@@ -4,7 +4,7 @@
 
 ## ✨ 特性
 
-- 🧠 **读 transcript，不靠回忆**：自动定位当前会话的 transcript 文件（抗 compaction），从 jsonl 提取可读对话，不靠模型记忆
+- 🧠 **读 transcript，不靠回忆**：用可核验的会话 ID 或指定路径定位 transcript（抗 compaction），从 jsonl 提取可读对话
 - 🧩 **按对话类型选结构**：自动判断技术决策 / 知识问答 / 调试排错 / 头脑风暴 / 代码实现五型，匹配不同结构
 - ✂️ **精准删留**：删寒暄 / 格式确认 / 失败尝试 / 工具过程，留结论 / 推理链 / 决策依据 / 代码方案
 - 📎 **折叠原文**：底部折叠保留清洗后对话原文，超 200 轮自动精简并标注 transcript 路径
@@ -28,7 +28,7 @@ git clone https://github.com/pamler1004/chat-to-note.git ~/.codex/skills/chat-to
 
 在 Claude Code 或 Codex 里结束一次高质量对话后，说「整理这次对话」。它会：
 
-1. 自动定位当前会话的 transcript（用环境变量精确定位，抗 compaction）
+1. 使用可核验的会话 ID 或指定路径定位 transcript；身份不明时不按最近修改时间猜测
 2. Python 脚本解析 jsonl，过滤 thinking / tool_use / reasoning 等过程噪声
 3. 判断对话类型，按匹配结构建立大纲
 4. 按价值点（非时间线）提炼：结论、推理链、决策依据、代码方案
